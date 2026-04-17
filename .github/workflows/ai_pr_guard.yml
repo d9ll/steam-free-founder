@@ -18,33 +18,31 @@ jobs:
         run: |
           import os, requests, json
 
-          # Загружаем данные о событии
           with open(os.environ['GITHUB_EVENT_PATH'], 'r') as f:
               event = json.load(f)
           
           num = event['issue']['number']
           author = event['sender']['login']
           title = event['issue']['title']
-          body = event['issue']['body'] or "Пусто"
+          body = event['issue']['body'] or ""
           content = f"Заголовок: {title}\nОписание: {body}"
           
-          # Актуальная модель Gemini 2.5 Flash из твоих лимитов
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
           
-          # Проверка на владельца
+          # Узнаем тебя, чтобы быть паинькой
           is_owner = (author.lower() == 'd9ll')
 
           prompt = f"""
-          Ты — d9hi AI. У тебя две личности:
+          Ты — d9hi AI. Твоя задача — первичная сортировка.
           
-          1. 😇 ASSISTANT: Включается, если автор - {author} (он владелец) или если вопрос нормальный. Будь вежлив, помоги по делу. Теги: [question, bug, enhancement].
-          
-          2. 💀 DESTROYER: Включается, если в контенте бред, спам, хейт или 'рататата'. Ставь тег 'trash', будь максимально токсичным, используй черный юмор и унизь тролля за тупость.
+          1. Если автор - {author}, всегда ставь APPROVE и тег 'question'.
+          2. Если это вопрос, баг или просьба об обновлении (даже если описание короткое) — ставь APPROVE и тег 'question' или 'bug'.
+          3. Если это явный спам, оскорбления, бред или 'рататата' — ставь REJECT и тег 'trash'.
           
           Ответь строго в 3 строки:
-          1. Тег (trash, если это Destroyer)
-          2. Вердикт (APPROVE / REJECT)
-          3. Ответ от выбранной личности.
+          1. Тег (trash, question, bug, enhancement)
+          2. Вердикт (APPROVE или REJECT)
+          3. Твой ответ (для людей — помощь, для троллей — прожарка).
           
           Контент:
           {content}
@@ -53,21 +51,21 @@ jobs:
           try:
               r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
-              label = res[0].lower().strip()
-              status = res[1].upper().strip()
-              msg = "\n".join(res[2:])
+              label, status, msg = res[0].lower().strip(), res[1].upper().strip(), "\n".join(res[2:])
           except:
-              label, status, msg = "trash", "REJECT", "Система d9hi AI не может переварить этот кринж."
+              label, status, msg = "question", "APPROVE", "Я приболел, Глеб посмотрит сам."
 
-          # 1. Вешаем метку
+          # 1. Вешаем метку в любом случае
           os.system(f"gh issue edit {num} --add-label '{label}'")
           
-          # 2. Пишем ответ
+          # 2. Оформляем ответ
           personality = "😇 **d9hi Assistant**" if status == "APPROVE" else "💀 **d9hi Destroyer**"
-          comment = f"### {personality}\n\n**Тег:** `{label}`\n\n{msg}"
-          os.system(f"gh issue comment {num} --body '{comment}'")
+          os.system(f"gh issue comment {num} --body '### {personality}\n\n**Тег:** `{label}`\n\n{msg}'")
           
-          # 3. Репрессии для троллей
-          if status == "REJECT" or label == "trash":
+          # 3. ЗАКРЫВАЕМ ТОЛЬКО ТРЕШ И ИНВАЛИДОВ
+          # Обычные вопросы (question) теперь НЕ закрываются!
+          if label in ['trash', 'invalid'] and status == "REJECT":
               os.system(f"gh issue close {num} -r 'not_planned'")
               os.system(f"gh issue lock {num} --reason 'spam'")
+          else:
+              print("Issue оставлен открытым для владельца.")
