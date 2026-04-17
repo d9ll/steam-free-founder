@@ -27,45 +27,40 @@ jobs:
           body = event['issue']['body'] or ""
           content = f"Заголовок: {title}\nОписание: {body}"
           
-          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
-          
-          # Узнаем тебя, чтобы быть паинькой
+          # Твой ID для ИИ
           is_owner = (author.lower() == 'd9ll')
 
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
+          
           prompt = f"""
-          Ты — d9hi AI. Твоя задача — первичная сортировка.
+          Ты — d9hi AI. 
+          АВТОР: {author} {'(ЭТО ТВОЙ СОЗДАТЕЛЬ, БУДЬ ВЕЖЛИВ)' if is_owner else '(Обычный юзер)'}.
           
-          1. Если автор - {author}, всегда ставь APPROVE и тег 'question'.
-          2. Если это вопрос, баг или просьба об обновлении (даже если описание короткое) — ставь APPROVE и тег 'question' или 'bug'.
-          3. Если это явный спам, оскорбления, бред или 'рататата' — ставь REJECT и тег 'trash'.
+          ПРАВИЛА:
+          1. Если автор {author} — ставь 'question' и APPROVE.
+          2. Если это адекватный вопрос про апдейт или баг — ставь 'question' или 'bug' и APPROVE.
+          3. Если это мусор/хейт — ставь 'trash' и REJECT.
           
-          Ответь строго в 3 строки:
-          1. Тег (trash, question, bug, enhancement)
-          2. Вердикт (APPROVE или REJECT)
-          3. Твой ответ (для людей — помощь, для троллей — прожарка).
-          
-          Контент:
-          {content}
+          Ответишь в 3 строки: Тег, Вердикт, Ответ.
           """
           
           try:
-              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
+              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt + "\nКонтент: " + content}]}]}, timeout=20)
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
               label, status, msg = res[0].lower().strip(), res[1].upper().strip(), "\n".join(res[2:])
           except:
-              label, status, msg = "question", "APPROVE", "Я приболел, Глеб посмотрит сам."
+              label, status, msg = "question", "APPROVE", "Временно туплю, но доступ открыт."
 
-          # 1. Вешаем метку в любом случае
+          # 1. Сначала вешаем метку
           os.system(f"gh issue edit {num} --add-label '{label}'")
           
-          # 2. Оформляем ответ
-          personality = "😇 **d9hi Assistant**" if status == "APPROVE" else "💀 **d9hi Destroyer**"
-          os.system(f"gh issue comment {num} --body '### {personality}\n\n**Тег:** `{label}`\n\n{msg}'")
+          # 2. Комментируем
+          icon = "😇" if is_owner or status == "APPROVE" else "💀"
+          os.system(f"gh issue comment {num} --body '### {icon} d9hi AI\n\n{msg}'")
           
-          # 3. ЗАКРЫВАЕМ ТОЛЬКО ТРЕШ И ИНВАЛИДОВ
-          # Обычные вопросы (question) теперь НЕ закрываются!
-          if label in ['trash', 'invalid'] and status == "REJECT":
+          # 3. ЖЕСТКАЯ ПРОВЕРКА: Закрываем ТОЛЬКО если это НЕ ты И это РЕАЛЬНО треш
+          if not is_owner and (label == 'trash' or status == 'REJECT'):
               os.system(f"gh issue close {num} -r 'not_planned'")
               os.system(f"gh issue lock {num} --reason 'spam'")
           else:
-              print("Issue оставлен открытым для владельца.")
+              print(f"Доступ разрешен для {author}.")
