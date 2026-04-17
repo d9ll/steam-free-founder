@@ -30,81 +30,68 @@ jobs:
           api_key = os.getenv("GEMINI_API_KEY")
           author = os.getenv("GITHUB_ACTOR")
           
-          # Загружаем данные о событии
           with open(os.environ['GITHUB_EVENT_PATH'], 'r', encoding='utf-8') as f:
               event_data = json.load(f)
           
           is_pr = "pull_request" in event_data
-          content = ""
-
-          # Сбор данных в зависимости от типа события
           if is_pr:
               try:
-                  content = "ТИП: Pull Request\nDIFF КОДА:\n" + subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:3000]
-              except: content = "ТИП: Pull Request (Новый или без дифф-данных)"
+                  diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:3000]
+                  content = f"TYPE: Pull Request\nDIFF:\n{diff}"
+              except: content = "TYPE: Pull Request (Empty or New)"
           else:
-              title = event_data.get("issue", {}).get("title", "Без заголовка")
-              body = event_data.get("issue", {}).get("body", "Без описания")
-              content = f"ТИП: Issue\nЗАГОЛОВОК: {title}\nОПИСАНИЕ: {body}"
+              content = f"TYPE: Issue\nTITLE: {event_data.get('issue', {}).get('title')}\nBODY: {event_data.get('issue', {}).get('body')}"
 
-          # Настройка запроса к ИИ
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+          
+          # Промпт стал намного жестче
           prompt = f"""
-          Ты — главный ИИ-контролер проекта d9hi. Твоя задача — модерация.
+          Ты — безжалостный техлид d9hi. Твоя цель — чистота репозитория.
           Автор: {author}
           
-          ИНСТРУКЦИЯ:
-          1. Проанализируй контент ниже.
-          2. В первой строке напиши ТОЛЬКО название подходящей метки: [bug, enhancement, question, invalid, documentation, go].
-          3. Во второй строке напиши вердикт: REJECT (если это мусор, 'бла-бла' или пустая Issue) или APPROVE.
-          4. С третьей строки напиши краткое мнение на русском.
+          ПРАВИЛА:
+          1. Если в контенте есть фразы типа 'привет', 'как дела', 'тест', 'бла бла', или это просто пустой треп — это REJECT.
+          2. Если это Pull Request с бесполезными изменениями — это REJECT.
+          3. Если это реальный баг-репорт или годный код — это APPROVE.
 
-          КОНТЕНТ ДЛЯ АНАЛИЗА:
+          ОТВЕТЬ СТРОГО ПО ШАБЛОНУ (3 строки):
+          Строка 1: МЕТКА (выбери одну: bug, enhancement, question, invalid, documentation, go)
+          Строка 2: ВЕРДИКТ (строго REJECT или APPROVE)
+          Строка 3: Твой разнос или похвала на русском.
+
+          КОНТЕНТ:
           {content}
           """
 
           try:
               payload = {"contents": [{"parts": [{"text": prompt}]}]}
-              r = requests.post(url, json=payload)
+              r = requests.post(url, json=payload, timeout=30)
               data = r.json()
               
-              if "candidates" in data:
-                  res = data["candidates"][0]["content"]["parts"][0]["text"].strip().split('\n')
-                  label = res[0].lower().strip()
-                  # Проверка, чтобы метка была из списка
-                  if not any(x in label for x in ["bug", "enhancement", "question", "invalid", "documentation", "go"]):
-                      label = "question"
-                  status = "reject" if "REJECT" in (res[1] if len(res) > 1 else "").upper() else "approve"
-                  comment = "\n".join(res[2:]) if len(res) > 2 else "Анализ завершен."
-              else:
-                  label, status, comment = "invalid", "reject", f"Ошибка API Google: {json.dumps(data)}"
+              res_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+              lines = [l.strip() for l in res_text.split('\n') if l.strip()]
+              
+              # Если ИИ выдал меньше 2 строк, это подозрительно
+              label = lines[0].lower() if len(lines) > 0 else "invalid"
+              status = "reject" if len(lines) < 2 or "REJECT" in lines[1].upper() else "approve"
+              comment = "\n".join(lines[2:]) if len(lines) > 2 else "Нет внятных объяснений. Отклонено."
           except Exception as e:
-              label, status, comment = "question", "error", f"Ошибка выполнения скрипта: {str(e)}"
+              label, status, comment = "invalid", "reject", f"Системный сбой или мусорный контент: {str(e)}"
 
-          # Передаем переменные в систему GitHub
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
-              f.write(f"AI_LABEL={label}\n")
-              f.write(f"AI_STATUS={status}\n")
-              f.write(f"AI_RESULT<<EOF\n{comment}\nEOF\n")
+              f.write(f"AI_LABEL={label}\nAI_STATUS={status}\nAI_RESULT<<EOF\n{comment}\nEOF\n")
 
-      - name: Execute GitHub Actions
+      - name: Execute
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           TYPE: ${{ github.event_name == 'pull_request' and 'pr' || 'issue' }}
         run: |
-          # 1. Вешаем метку
+          # Вешаем метку и коммент
           gh $TYPE edit $NUMBER --add-label "${{ env.AI_LABEL }}"
+          gh $TYPE comment $NUMBER --body "### 🤖 d9hi AI Control\n**Статус:** ${{ env.AI_STATUS }}\n\n${{ env.AI_RESULT }}"
           
-          # 2. Оставляем комментарий
-          gh $TYPE comment $NUMBER --body "### 🤖 d9hi AI Review
-          Метка: **${{ env.AI_LABEL }}**
-          
-          ${{ env.AI_RESULT }}
-          
-          Проверка d9hi завершена 🚀"
-          
-          # 3. Закрываем, если это мусор (reject)
+          # Если REJECT — закрываем немедленно
           if [ "${{ env.AI_STATUS }}" = "reject" ]; then
-            gh $TYPE close $NUMBER --comment "Автоматическое закрытие: d9hi не одобряет этот контент."
+            gh $TYPE close $NUMBER --reason "not_planned" --comment "d9hi: Мусор обнаружен. Доступ заблокирован."
           fi
