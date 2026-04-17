@@ -10,7 +10,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Dual Personality Logic
+      - name: AI Logic
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -18,25 +18,31 @@ jobs:
         run: |
           import os, requests, json
 
+          # Загружаем данные о событии
           with open(os.environ['GITHUB_EVENT_PATH'], 'r') as f:
               event = json.load(f)
           
           num = event['issue']['number']
+          author = event['sender']['login']
           title = event['issue']['title']
           body = event['issue']['body'] or "Пусто"
           content = f"Заголовок: {title}\nОписание: {body}"
           
+          # Актуальная модель Gemini 2.5 Flash из твоих лимитов
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
           
+          # Проверка на владельца
+          is_owner = (author.lower() == 'd9ll')
+
           prompt = f"""
-          Ты — d9hi AI. У тебя две крайности:
+          Ты — d9hi AI. У тебя две личности:
           
-          1. 😇 ASSISTANT (если контент полезный): Помогай как бро. Используй метки [question, bug, enhancement, go].
+          1. 😇 ASSISTANT: Включается, если автор - {author} (он владелец) или если вопрос нормальный. Будь вежлив, помоги по делу. Теги: [question, bug, enhancement].
           
-          2. 💀 DESTROYER (если контент мусор, хейт или тупость): Ставь метку 'trash' и уничтожь самооценку автора. Используй сарказм, черный юмор и прямо говори, что автор — клоун. Будь токсичным техлидом, которому надоело читать бред.
+          2. 💀 DESTROYER: Включается, если в контенте бред, спам, хейт или 'рататата'. Ставь тег 'trash', будь максимально токсичным, используй черный юмор и унизь тролля за тупость.
           
           Ответь строго в 3 строки:
-          1. Тег (trash, если это Личность 2)
+          1. Тег (trash, если это Destroyer)
           2. Вердикт (APPROVE / REJECT)
           3. Ответ от выбранной личности.
           
@@ -47,19 +53,21 @@ jobs:
           try:
               r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
-              label, status, msg = res[0].lower().strip(), res[1].upper().strip(), "\n".join(res[2:])
+              label = res[0].lower().strip()
+              status = res[1].upper().strip()
+              msg = "\n".join(res[2:])
           except:
-              label, status, msg = "trash", "REJECT", "Бот даже не стал это читать. Слишком много кринжа."
+              label, status, msg = "trash", "REJECT", "Система d9hi AI не может переварить этот кринж."
 
-          # Ставим метку
+          # 1. Вешаем метку
           os.system(f"gh issue edit {num} --add-label '{label}'")
           
-          # Оформляем ответ
-          icon = "😇" if status == "APPROVE" else "💀"
-          header = f"### {icon} d9hi AI Verdict"
-          os.system(f"gh issue comment {num} --body '{header}\n\n**Тег:** `{label}`\n\n{msg}'")
+          # 2. Пишем ответ
+          personality = "😇 **d9hi Assistant**" if status == "APPROVE" else "💀 **d9hi Destroyer**"
+          comment = f"### {personality}\n\n**Тег:** `{label}`\n\n{msg}"
+          os.system(f"gh issue comment {num} --body '{comment}'")
           
-          # Если это трэш — закрываем и вешаем замок
+          # 3. Репрессии для троллей
           if status == "REJECT" or label == "trash":
               os.system(f"gh issue close {num} -r 'not_planned'")
               os.system(f"gh issue lock {num} --reason 'spam'")
