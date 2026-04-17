@@ -16,38 +16,55 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Ask Gemini AI
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      - name: Gemini AI Review
+        shell: python
         run: |
-          # 1. Берем только суть изменений (файлы и строки)
-          DIFF=$(git diff HEAD^ HEAD | head -c 4000)
+          import os
+          import requests
+          import json
+          import subprocess
+
+          # === ТЕСТОВЫЙ ХАРДКОД (УДАЛИТЬ ПОСЛЕ ПРОВЕРКИ!) ===
+          api_key = "AIzaSyCQuxc9xIlANvpifsX6vQ6zh7YRiUMwhWU" 
+          # ===============================================
+
+          try:
+              # 1. Получаем изменения (дифф)
+              diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:4000]
+              
+              # 2. Формируем запрос
+              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+              
+              prompt = f"""
+              Ты — AI-ассистент проекта d9hi. Твоя задача: проверить Pull Request.
+              Если автор 'dependabot[bot]', напиши: 'Зафиксировано обновление зависимостей. Принимаю автоматически.'
+              Если автор 'd9ll', проверь логику парсинга Steam и безопасность.
+              Отвечай на русском языке. В конце добавь: 'Проверка d9hi завершена 🚀'.
+              
+              Код изменений:
+              {diff}
+              """
+
+              payload = {
+                  "contents": [{"parts": [{"text": prompt}]}]
+              }
+
+              # 3. Отправка
+              response = requests.post(url, json=payload)
+              data = response.json()
+              
+              if "candidates" in data:
+                  result = data["candidates"][0]["content"]["parts"][0]["text"]
+              else:
+                  # Если ошибка, выводим её полностью для диагностики
+                  result = f"Ошибка API Google: {json.dumps(data)}"
           
-          # 2. Формируем чистый JSON для запроса
-          cat <<EOF > payload.json
-          {
-            "contents": [{
-              "parts": [{
-                "text": "Ты — AI-ассистент проекта d9hi. Твоя задача: проверить изменения в Pull Request. Если автор 'dependabot[bot]', напиши: 'Зафиксировано обновление зависимостей. Принимаю автоматически.' Если автор 'd9ll', проверь логику парсинга Steam и безопасность кода. Отвечай на русском. В конце: 'Проверка d9hi завершена 🚀'. Изменения кода: $DIFF"
-              }]
-            }]
-          }
-          EOF
+          except Exception as e:
+              result = f"Критическая ошибка скрипта: {str(e)}"
 
-          # 3. Запрос к API
-          RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}" \
-            -H 'Content-Type: application/json' \
-            -d @payload.json)
-
-          # 4. Достаем ответ (jq -r вытащит текст без кавычек)
-          RESULT=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Ошибка: Google не вернул текст. Проверь API Key или лимиты."')
-          
-          # Если в ответе ошибка про ключ или модель, выведем её для отладки
-          if [[ "$RESULT" == *"Ошибка"* ]]; then echo "Full Response: $RESPONSE"; fi
-
-          echo "AI_RESULT<<EOF" >> $GITHUB_ENV
-          echo "$RESULT" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          # 4. Передаем результат в GitHub Environment
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
+              f.write(f"AI_RESULT<<EOF\n{result}\nEOF\n")
 
       - name: Comment PR
         uses: thollander/actions-comment-pull-request@v2
