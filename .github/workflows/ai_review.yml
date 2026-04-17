@@ -41,7 +41,7 @@ jobs:
 
           # 2. Запрос к ИИ
           api_key = os.getenv("GEMINI_API_KEY")
-          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
           prompt = (
               "Ты — техлид d9hi. Ответь строго в 3 строки:\n"
               "1. Метка (bug, enhancement, question, invalid)\n"
