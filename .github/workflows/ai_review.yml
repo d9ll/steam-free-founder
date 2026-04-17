@@ -11,7 +11,6 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.number != null
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,31 +20,31 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # 1. Собираем изменения в коде
-          DIFF=$(git diff HEAD^ HEAD | head -c 5000) # Берем первые 5к символов, чтобы не превысить лимит
+          # 1. Берем только суть изменений (файлы и строки)
+          DIFF=$(git diff HEAD^ HEAD | head -c 4000)
           
-          # 2. Формируем промпт
-          PROMPT="Ты — AI-ассистент проекта d9hi. Твоя задача: проверить изменения в Pull Request.
-          1. Если автором PR является 'dependabot[bot]', напиши: 'Зафиксировано обновление зависимостей. Принимаю автоматически.'
-          2. Если автор — d9ll, проверь: не сломалась ли логика поиска игр и нет ли токенов в коде.
-          Вердикт пиши на русском. В конце добавь: 'Проверка d9hi завершена 🚀'.
-          Код изменений:
-          $DIFF"
+          # 2. Формируем чистый JSON для запроса
+          cat <<EOF > payload.json
+          {
+            "contents": [{
+              "parts": [{
+                "text": "Ты — AI-ассистент проекта d9hi. Твоя задача: проверить изменения в Pull Request. Если автор 'dependabot[bot]', напиши: 'Зафиксировано обновление зависимостей. Принимаю автоматически.' Если автор 'd9ll', проверь логику парсинга Steam и безопасность кода. Отвечай на русском. В конце: 'Проверка d9hi завершена 🚀'. Изменения кода: $DIFF"
+              }]
+            }]
+          }
+          EOF
 
-          # 3. Отправляем запрос через cURL (безотказный метод)
-          # Используем v1beta, так как она самая гибкая
+          # 3. Запрос к API
           RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}" \
             -H 'Content-Type: application/json' \
-            -d "{
-              \"contents\": [{
-                \"parts\":[{\"text\": \"$(echo "$PROMPT" | jq -aRs . | cut -c 2- | rev | cut -c 2- | rev)\"}]
-              }]
-            }")
+            -d @payload.json)
 
-          # 4. Вытаскиваем только текст ответа
-          RESULT=$(echo $RESPONSE | jq -r '.candidates[0].content.parts[0].text // "Ошибка: ИИ не смог сгенерировать ответ."')
+          # 4. Достаем ответ (jq -r вытащит текст без кавычек)
+          RESULT=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Ошибка: Google не вернул текст. Проверь API Key или лимиты."')
           
-          # 5. Сохраняем для следующего шага
+          # Если в ответе ошибка про ключ или модель, выведем её для отладки
+          if [[ "$RESULT" == *"Ошибка"* ]]; then echo "Full Response: $RESPONSE"; fi
+
           echo "AI_RESULT<<EOF" >> $GITHUB_ENV
           echo "$RESULT" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
