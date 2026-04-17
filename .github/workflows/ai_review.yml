@@ -17,20 +17,42 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Gemini AI Review
-        uses: google-gemini/gemini-github-action@v1.1.0
+      - name: Ask Gemini AI
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # 1. Собираем изменения в коде
+          DIFF=$(git diff HEAD^ HEAD | head -c 5000) # Берем первые 5к символов, чтобы не превысить лимит
+          
+          # 2. Формируем промпт
+          PROMPT="Ты — AI-ассистент проекта d9hi. Твоя задача: проверить изменения в Pull Request.
+          1. Если автором PR является 'dependabot[bot]', напиши: 'Зафиксировано обновление зависимостей. Принимаю автоматически.'
+          2. Если автор — d9ll, проверь: не сломалась ли логика поиска игр и нет ли токенов в коде.
+          Вердикт пиши на русском. В конце добавь: 'Проверка d9hi завершена 🚀'.
+          Код изменений:
+          $DIFF"
+
+          # 3. Отправляем запрос через cURL (безотказный метод)
+          # Используем v1beta, так как она самая гибкая
+          RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"contents\": [{
+                \"parts\":[{\"text\": \"$(echo "$PROMPT" | jq -aRs . | cut -c 2- | rev | cut -c 2- | rev)\"}]
+              }]
+            }")
+
+          # 4. Вытаскиваем только текст ответа
+          RESULT=$(echo $RESPONSE | jq -r '.candidates[0].content.parts[0].text // "Ошибка: ИИ не смог сгенерировать ответ."')
+          
+          # 5. Сохраняем для следующего шага
+          echo "AI_RESULT<<EOF" >> $GITHUB_ENV
+          echo "$RESULT" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Comment PR
+        uses: thollander/actions-comment-pull-request@v2
         with:
-          api-key: ${{ secrets.GEMINI_API_KEY }}
-          # Указываем актуальную модель 2026 года
-          model: gemini-2.5-flash
-          prompt: |
-            Ты — AI-ассистент проекта d9hi. 
-            Твоя задача: проверить изменения в Pull Request для бота-парсера Steam.
-            
-            1. Если автором PR является 'dependabot[bot]', напиши: "Зафиксировано обновление зависимостей. Проверка совместимости пройдена. Принимаю автоматически."
-            2. Если автор — d9ll, внимательно проверь:
-               - Не сломалась ли логика поиска бесплатных игр.
-               - Нет ли в коде открытых токенов, ключей или паролей.
-            
-            Вердикт пиши кратко, на русском языке. 
-            В конце добавь: "Проверка d9hi завершена 🚀".
+          message: |
+            ### 🤖 d9hi AI Code Review
+            ${{ env.AI_RESULT }}
