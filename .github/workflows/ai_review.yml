@@ -22,20 +22,11 @@ jobs:
       - name: Gemini AI Review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GITHUB_ACTOR: ${{ github.actor }}
         shell: python
         run: |
           import os, requests, json, subprocess
 
-          # 1. Проверка ключа
-          api_key = os.getenv("GEMINI_API_KEY")
-          if not api_key:
-              result_text = "Ошибка: API ключ не найден в Secrets!"
-              with open(os.environ['GITHUB_ENV'], 'a') as f:
-                  f.write(f"AI_STATUS=error\nAI_RESULT={result_text}\nAI_LABEL=question\n")
-              exit(0)
-
-          # 2. Сбор данных
+          # 1. Сбор данных
           try:
               with open(os.environ['GITHUB_EVENT_PATH'], 'r', encoding='utf-8') as f:
                   event_data = json.load(f)
@@ -48,11 +39,11 @@ jobs:
           except Exception as e:
               content = f"Ошибка сбора данных: {str(e)}"
 
-          # 3. Запрос к ИИ
+          # 2. Запрос к ИИ
+          api_key = os.getenv("GEMINI_API_KEY")
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
           prompt = (
-              "Ты — помощник d9hi. Проанализируй это. "
-              "Верни ответ строго в 3 строки:\n"
+              "Ты — техлид d9hi. Ответь строго в 3 строки:\n"
               "1. Метка (bug, enhancement, question, invalid)\n"
               "2. Вердикт (APPROVE или REJECT)\n"
               "3. Комментарий на русском.\n\n"
@@ -61,18 +52,13 @@ jobs:
 
           try:
               r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
-              data = r.json()
-              if "candidates" in data:
-                  res = data["candidates"][0]["content"]["parts"][0]["text"].strip().split('\n')
-                  label = res[0].lower() if len(res) > 0 else "question"
-                  status = "reject" if len(res) > 1 and "REJECT" in res[1].upper() else "approve"
-                  comment = "\n".join(res[2:]) if len(res) > 2 else "Всё выглядит нормально."
-              else:
-                  label, status, comment = "invalid", "error", f"ИИ не ответил: {json.dumps(data)}"
-          except Exception as e:
-              label, status, comment = "invalid", "error", f"Ошибка запроса: {str(e)}"
+              res = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip().split('\n')
+              label = res[0].lower().strip()
+              status = "reject" if "REJECT" in res[1].upper() else "approve"
+              comment = "\n".join(res[2:])
+          except:
+              label, status, comment = "invalid", "reject", "Бот не смог обработать это. Похоже на мусор."
 
-          # 4. Запись для следующего шага
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
               f.write(f"AI_LABEL={label}\nAI_STATUS={status}\nAI_RESULT<<EOF\n{comment}\nEOF\n")
 
@@ -82,20 +68,17 @@ jobs:
           NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           TYPE: ${{ github.event_name == 'pull_request' and 'pr' || 'issue' }}
         run: |
-          # Теперь он ОБЯЗАТЕЛЬНО пишет коммент
+          # Теперь он ОБЯЗАН написать коммент
           gh $TYPE comment $NUMBER --body "### 🤖 d9hi AI Monitor
-          **Статус:** ${{ env.AI_STATUS }}
+          **Вердикт:** ${{ env.AI_STATUS }}
           **Метка:** ${{ env.AI_LABEL }}
           
           ${{ env.AI_RESULT }}
           
-          ---
           Проверка завершена 🚀"
           
-          # Навешиваем метку
           gh $TYPE edit $NUMBER --add-label "${{ env.AI_LABEL }}"
           
-          # Закрываем только если статус строго REJECT
           if [ "${{ env.AI_STATUS }}" = "reject" ]; then
-            gh $TYPE close $NUMBER --comment "Авто-закрытие: контент не прошел модерацию d9hi."
+            gh $TYPE close $NUMBER --comment "d9hi отклонил изменения."
           fi
