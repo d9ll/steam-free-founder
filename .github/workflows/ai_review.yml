@@ -22,55 +22,37 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
         shell: python
         run: |
-          import os
-          import requests
-          import json
-          import subprocess
+          import os, requests, json, subprocess
 
           api_key = os.getenv("GEMINI_API_KEY")
           author = os.getenv("GITHUB_ACTOR")
 
+          if not api_key:
+              print("PR_STATUS=error")
+              exit(0)
+
           try:
-              # 1. Получаем дифф
               diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:4000]
               
-              # 2. Базовая проверка на пустоту
               if len(diff.strip()) < 10:
-                  result = "REJECT\nБро, тут почти нет кода. d9hi не принимает пустые правки."
+                  result = "REJECT\nСлишком мало изменений. d9hi не принимает пустые файлы."
               else:
                   url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+                  prompt = f"Ты жесткий AI d9hi. Автор: {author}. Если в коде мусор или 'бла-бла', пиши 'REJECT'. Если годно - 'APPROVE'. Код: {diff}"
                   
-                  prompt = f"""
-                  Ты — жесткий AI-ассистент проекта d9hi. 
-                  Автор: {author}.
-                  
-                  ЗАДАЧА:
-                  1. Если автор 'dependabot[bot]', напиши 'ACCEPT' и что изменилось.
-                  2. Если автор 'd9ll':
-                     - Если в коде мусор, 'бла-бла' или бесполезные файлы, напиши в первой строке 'REJECT' и жестко критикуй.
-                     - Если код полезный, напиши 'APPROVE' и похвали.
-                  
-                  Отвечай на русском. В конце: 'Проверка d9hi завершена 🚀'.
-                  Код изменений:
-                  {diff}
-                  """
-
                   payload = {"contents": [{"parts": [{"text": prompt}]}]}
                   response = requests.post(url, json=payload)
                   data = response.json()
                   
-                  if "candidates" in data and data["candidates"]:
+                  if "candidates" in data:
                       result = data["candidates"][0]["content"]["parts"][0]["text"]
                   else:
-                      result = f"REJECT\nОшибка API: {json.dumps(data)}"
-          
+                      result = f"error\nОшибка API: {data.get('error', {}).get('message', 'Unknown error')}"
           except Exception as e:
-              result = f"REJECT\nОшибка скрипта: {str(e)}"
+              result = f"error\nОшибка: {str(e)}"
 
-          # 3. Логика статуса для закрытия PR
-          status = "reject" if "REJECT" in result else "approve"
-          # Убираем технические слова из финального комментария
-          clean_result = result.replace("REJECT", "").replace("APPROVE", "").replace("ACCEPT", "").strip()
+          status = "reject" if "REJECT" in result else ("approve" if "APPROVE" in result else "error")
+          clean_result = result.replace("REJECT", "").replace("APPROVE", "").strip()
 
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
               f.write(f"AI_RESULT<<EOF\n{clean_result}\nEOF\n")
@@ -79,13 +61,10 @@ jobs:
       - name: Comment PR
         uses: thollander/actions-comment-pull-request@v2
         with:
-          message: |
-            ### 🤖 d9hi AI Code Review
-            ${{ env.AI_RESULT }}
+          message: "### 🤖 d9hi AI Code Review\n${{ env.AI_RESULT }}"
 
       - name: Close Trash PR
         if: env.PR_STATUS == 'reject'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr close ${{ github.event.pull_request.number }} --comment "Автоматическое закрытие: d9hi отклонил эти изменения."
+        run: gh pr close ${{ github.event.pull_request.number }} --comment "d9hi отклонил мусорные правки."
