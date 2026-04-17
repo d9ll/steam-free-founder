@@ -17,7 +17,6 @@ jobs:
           fetch-depth: 2
 
       - name: Gemini AI Review
-        # ВАЖНО: Мы явно прокидываем секрет в окружение Python
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_ACTOR: ${{ github.actor }}
@@ -28,56 +27,44 @@ jobs:
           import json
           import subprocess
 
-          # 1. Загрузка и проверка переменных
           api_key = os.getenv("GEMINI_API_KEY")
           author = os.getenv("GITHUB_ACTOR")
 
-          if not api_key:
-              print("::error::Критическая ошибка: Секрет GEMINI_API_KEY не передан в Actions!")
-              exit(1)
-
           try:
-              # 2. Получаем изменения (diff)
               diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:4000]
-              
-              # 3. Настройка запроса
-              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
               
               prompt = f"""
-              Ты — профессиональный AI-ассистент проекта d9hi. 
-              Автор этого Pull Request: {author}
-
-              ИНСТРУКЦИИ:
-              1. Если автор 'dependabot[bot]', напиши: "Зафиксировано обновление зависимостей. Проверка пройдена."
-              2. Если автор 'd9ll':
-                 - Проверь код на полезность. Если там мусор, пустые файлы или бессмысленный текст, сделай строгое замечание.
-                 - Проверь безопасность (токены/ключи) и логику парсинга Steam.
-                 - Если все отлично, напиши: 'Код огонь, можно мержить'.
+              Ты — жесткий AI-ассистент проекта d9hi. 
+              Автор: {author}.
               
-              Отвечай на русском языке. В конце добавь: 'Проверка d9hi завершена 🚀'.
+              ЗАДАЧА:
+              1. Если автор 'dependabot[bot]', напиши 'ACCEPT' и кратко что обновилось.
+              2. Если в коде мусор, пустые файлы или 'бла-бла', напиши в первой строке 'REJECT', а дальше жестко раскритикуй.
+              3. Если код полезный, напиши 'APPROVE' и похвали.
               
-              КОД ИЗМЕНЕНИЙ:
+              Отвечай на русском. В конце: 'Проверка d9hi завершена 🚀'.
+              Код:
               {diff}
               """
 
               payload = {"contents": [{"parts": [{"text": prompt}]}]}
-              
-              # 4. Отправка в Google
               response = requests.post(url, json=payload)
-              data = response.json()
-              
-              if "candidates" in data:
-                  result = data["candidates"][0]["content"]["parts"][0]["text"]
-              else:
-                  # Выводим ошибку API, чтобы понять, что не так с ключом
-                  result = f"Ошибка API Google: {json.dumps(data)}"
-          
+              result = response.json()["candidates"][0]["content"]["parts"][0]["text"]
           except Exception as e:
-              result = f"Ошибка выполнения скрипта: {str(e)}"
+              result = f"REJECT\nОшибка: {str(e)}"
 
-          # 5. Записываем результат для комментария
+          # Определяем статус для GitHub Actions
+          status = "approve"
+          if "REJECT" in result:
+              status = "reject"
+          
+          # Очищаем текст от технического слова REJECT/APPROVE для комментария
+          clean_result = result.replace("REJECT", "").replace("APPROVE", "").replace("ACCEPT", "").strip()
+
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
-              f.write(f"AI_RESULT<<EOF\n{result}\nEOF\n")
+              f.write(f"AI_RESULT<<EOF\n{clean_result}\nEOF\n")
+              f.write(f"PR_STATUS={status}\n")
 
       - name: Comment PR
         uses: thollander/actions-comment-pull-request@v2
@@ -85,3 +72,11 @@ jobs:
           message: |
             ### 🤖 d9hi AI Code Review
             ${{ env.AI_RESULT }}
+
+      # ШАГ ЗАКРЫТИЯ: Если ИИ сказал REJECT — закрываем PR
+      - name: Close Trash PR
+        if: env.PR_STATUS == 'reject'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr close ${{ github.event.pull_request.number }} --comment "Автоматическое закрытие: d9hi не принимает мусорные правки."
