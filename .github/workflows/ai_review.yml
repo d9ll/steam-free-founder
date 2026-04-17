@@ -1,4 +1,4 @@
-name: d9hi Omnipotence Reviewer
+name: d9hi AI Monitor
 
 on:
   pull_request:
@@ -27,71 +27,75 @@ jobs:
         run: |
           import os, requests, json, subprocess
 
+          # 1. Проверка ключа
           api_key = os.getenv("GEMINI_API_KEY")
-          author = os.getenv("GITHUB_ACTOR")
-          
-          with open(os.environ['GITHUB_EVENT_PATH'], 'r', encoding='utf-8') as f:
-              event_data = json.load(f)
-          
-          is_pr = "pull_request" in event_data
-          if is_pr:
-              try:
+          if not api_key:
+              result_text = "Ошибка: API ключ не найден в Secrets!"
+              with open(os.environ['GITHUB_ENV'], 'a') as f:
+                  f.write(f"AI_STATUS=error\nAI_RESULT={result_text}\nAI_LABEL=question\n")
+              exit(0)
+
+          # 2. Сбор данных
+          try:
+              with open(os.environ['GITHUB_EVENT_PATH'], 'r', encoding='utf-8') as f:
+                  event_data = json.load(f)
+              
+              if "pull_request" in event_data:
                   diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:3000]
-                  content = f"TYPE: Pull Request\nDIFF:\n{diff}"
-              except: content = "TYPE: Pull Request (Empty or New)"
-          else:
-              content = f"TYPE: Issue\nTITLE: {event_data.get('issue', {}).get('title')}\nBODY: {event_data.get('issue', {}).get('body')}"
+                  content = f"PR Diff:\n{diff}"
+              else:
+                  content = f"Issue: {event_data.get('issue', {}).get('title')}\n{event_data.get('issue', {}).get('body')}"
+          except Exception as e:
+              content = f"Ошибка сбора данных: {str(e)}"
 
-          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-          
-          # Промпт стал намного жестче
-          prompt = f"""
-          Ты — безжалостный техлид d9hi. Твоя цель — чистота репозитория.
-          Автор: {author}
-          
-          ПРАВИЛА:
-          1. Если в контенте есть фразы типа 'привет', 'как дела', 'тест', 'бла бла', или это просто пустой треп — это REJECT.
-          2. Если это Pull Request с бесполезными изменениями — это REJECT.
-          3. Если это реальный баг-репорт или годный код — это APPROVE.
-
-          ОТВЕТЬ СТРОГО ПО ШАБЛОНУ (3 строки):
-          Строка 1: МЕТКА (выбери одну: bug, enhancement, question, invalid, documentation, go)
-          Строка 2: ВЕРДИКТ (строго REJECT или APPROVE)
-          Строка 3: Твой разнос или похвала на русском.
-
-          КОНТЕНТ:
-          {content}
-          """
+          # 3. Запрос к ИИ
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+          prompt = (
+              "Ты — помощник d9hi. Проанализируй это. "
+              "Верни ответ строго в 3 строки:\n"
+              "1. Метка (bug, enhancement, question, invalid)\n"
+              "2. Вердикт (APPROVE или REJECT)\n"
+              "3. Комментарий на русском.\n\n"
+              f"Контент: {content}"
+          )
 
           try:
-              payload = {"contents": [{"parts": [{"text": prompt}]}]}
-              r = requests.post(url, json=payload, timeout=30)
+              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
               data = r.json()
-              
-              res_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-              lines = [l.strip() for l in res_text.split('\n') if l.strip()]
-              
-              # Если ИИ выдал меньше 2 строк, это подозрительно
-              label = lines[0].lower() if len(lines) > 0 else "invalid"
-              status = "reject" if len(lines) < 2 or "REJECT" in lines[1].upper() else "approve"
-              comment = "\n".join(lines[2:]) if len(lines) > 2 else "Нет внятных объяснений. Отклонено."
+              if "candidates" in data:
+                  res = data["candidates"][0]["content"]["parts"][0]["text"].strip().split('\n')
+                  label = res[0].lower() if len(res) > 0 else "question"
+                  status = "reject" if len(res) > 1 and "REJECT" in res[1].upper() else "approve"
+                  comment = "\n".join(res[2:]) if len(res) > 2 else "Всё выглядит нормально."
+              else:
+                  label, status, comment = "invalid", "error", f"ИИ не ответил: {json.dumps(data)}"
           except Exception as e:
-              label, status, comment = "invalid", "reject", f"Системный сбой или мусорный контент: {str(e)}"
+              label, status, comment = "invalid", "error", f"Ошибка запроса: {str(e)}"
 
+          # 4. Запись для следующего шага
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
               f.write(f"AI_LABEL={label}\nAI_STATUS={status}\nAI_RESULT<<EOF\n{comment}\nEOF\n")
 
-      - name: Execute
+      - name: Post Result
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           TYPE: ${{ github.event_name == 'pull_request' and 'pr' || 'issue' }}
         run: |
-          # Вешаем метку и коммент
-          gh $TYPE edit $NUMBER --add-label "${{ env.AI_LABEL }}"
-          gh $TYPE comment $NUMBER --body "### 🤖 d9hi AI Control\n**Статус:** ${{ env.AI_STATUS }}\n\n${{ env.AI_RESULT }}"
+          # Теперь он ОБЯЗАТЕЛЬНО пишет коммент
+          gh $TYPE comment $NUMBER --body "### 🤖 d9hi AI Monitor
+          **Статус:** ${{ env.AI_STATUS }}
+          **Метка:** ${{ env.AI_LABEL }}
           
-          # Если REJECT — закрываем немедленно
+          ${{ env.AI_RESULT }}
+          
+          ---
+          Проверка завершена 🚀"
+          
+          # Навешиваем метку
+          gh $TYPE edit $NUMBER --add-label "${{ env.AI_LABEL }}"
+          
+          # Закрываем только если статус строго REJECT
           if [ "${{ env.AI_STATUS }}" = "reject" ]; then
-            gh $TYPE close $NUMBER --reason "not_planned" --comment "d9hi: Мусор обнаружен. Доступ заблокирован."
+            gh $TYPE close $NUMBER --comment "Авто-закрытие: контент не прошел модерацию d9hi."
           fi
