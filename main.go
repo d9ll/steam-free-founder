@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -11,15 +13,16 @@ import (
 )
 
 const (
-	BotToken   = "YOUR_TELEGRAM_BOT_TOKEN" // Замените на ваш токен бота
-	ChatID     = 000000000000              // Замените на ваш Chat ID
+	BotToken   = "YOUR_TELEGRAM_BOT_TOKEN"
+	ChatID     = 000000000000
 	SteamURL   = "https://store.steampowered.com/search/?maxprice=free&specials=1&ndl=1"
 	CheckDelay = 15 * time.Minute
+	DBFile     = "games_db.json" // Файл для хранения истории
 )
 
 type Game struct {
-	Title string
-	Link  string
+	Title string `json:"title"`
+	Link  string `json:"link"`
 }
 
 func main() {
@@ -28,41 +31,82 @@ func main() {
 		log.Fatalf("Ошибка: %v", err)
 	}
 
-	fmt.Printf("Бот %s запущен. Режим тишины при первом запуске включен.\n", bot.Self.UserName)
+	fmt.Printf("Бот %s запущен. База загружается из %s\n", bot.Self.UserName, DBFile)
 
-	foundGames := make(map[string]bool)
-
-	// Флаг первого запуска
-	isFirstRun := true
+	// Загружаем уже виденные игры из файла
+	foundGames := loadDatabase()
 
 	for {
 		fmt.Printf("[%s] Проверка Steam...\n", time.Now().Format("15:04:05"))
 		games := checkSteam()
 
-		newFoundCount := 0
+		hasChanges := false
 		for _, game := range games {
 			if !foundGames[game.Title] {
-				// Если это не первый запуск — отправляем в ТГ
-				if !isFirstRun {
-					msgText := fmt.Sprintf("🎁 **НОВАЯ РАЗДАЧА!**\n\n🎮 *%s*\n\n🔗 [Открыть в Steam](%s)", game.Title, game.Link)
-					msg := tgbotapi.NewMessage(ChatID, msgText)
-					msg.ParseMode = "Markdown"
-					bot.Send(msg)
-					fmt.Printf("НОВАЯ ИГРА: %s\n", game.Title)
-				}
-
-				// Добавляем в базу виденных
+				// Отправляем в ТГ только новые игры
+				msgText := fmt.Sprintf("🎁 **НОВАЯ РАЗДАЧА!**\n\n🎮 *%s*\n\n🔗 [Открыть в Steam](%s)", game.Title, game.Link)
+				msg := tgbotapi.NewMessage(ChatID, msgText)
+				msg.ParseMode = "Markdown"
+				bot.Send(msg)
+				
+				fmt.Printf("НОВАЯ ИГРА ДОБАВЛЕНА: %s\n", game.Title)
 				foundGames[game.Title] = true
-				newFoundCount++
+				hasChanges = true
 			}
 		}
 
-		if isFirstRun {
-			fmt.Printf("Первое сканирование завершено. Запомнил игр: %d. Жду обновлений...\n", newFoundCount)
-			isFirstRun = false
+		// Если нашли что-то новое — сохраняем обновленную базу
+		if hasChanges {
+			saveDatabase(foundGames)
+		} else {
+			fmt.Println("Ничего нового не найдено.")
 		}
 
 		time.Sleep(CheckDelay)
+	}
+}
+
+// Загрузка базы из JSON
+func loadDatabase() map[string]bool {
+	db := make(map[string]bool)
+	file, err := os.ReadFile(DBFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return db // Если файла нет, возвращаем пустую базу
+		}
+		log.Printf("Ошибка чтения базы: %v", err)
+		return db
+	}
+
+	var savedList []string
+	if err := json.Unmarshal(file, &savedList); err != nil {
+		log.Printf("Ошибка парсинга JSON: %v", err)
+		return db
+	}
+
+	for _, title := range savedList {
+		db[title] = true
+	}
+	return db
+}
+
+// Сохранение базы в JSON
+func saveDatabase(db map[string]bool) {
+	var list []string
+	for title := range db {
+		list = append(list, title)
+	}
+
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		log.Printf("Ошибка маршалинга: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(DBFile, data, 0644); err != nil {
+		log.Printf("Ошибка записи файла: %v", err)
+	} else {
+		fmt.Println("База данных успешно сохранена.")
 	}
 }
 
