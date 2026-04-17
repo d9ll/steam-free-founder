@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize]
   issues:
-    types: [opened] # Теперь он точно увидит твои "привет как дела"
+    types: [opened]
 
 permissions:
   contents: write
@@ -23,78 +23,88 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_ACTOR: ${{ github.actor }}
-          EVENT_CONTEXT: ${{ toJson(github.event) }}
         shell: python
         run: |
           import os, requests, json, subprocess
 
           api_key = os.getenv("GEMINI_API_KEY")
           author = os.getenv("GITHUB_ACTOR")
-          event_data = json.loads(os.getenv("EVENT_CONTEXT"))
+          
+          # Загружаем данные о событии
+          with open(os.environ['GITHUB_EVENT_PATH'], 'r', encoding='utf-8') as f:
+              event_data = json.load(f)
           
           is_pr = "pull_request" in event_data
-          content_to_analyze = ""
+          content = ""
 
+          # Сбор данных в зависимости от типа события
           if is_pr:
-              # Анализируем код
               try:
-                  content_to_analyze = f"DIFF КОДА:\n" + subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:3000]
-              except: content_to_analyze = "Новый PR без дифф-данных"
+                  content = "ТИП: Pull Request\nDIFF КОДА:\n" + subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:3000]
+              except: content = "ТИП: Pull Request (Новый или без дифф-данных)"
           else:
-              # Анализируем текст проблемы
-              title = event_data.get("issue", {}).get("title", "")
-              body = event_data.get("issue", {}).get("body", "")
-              content_to_analyze = f"ЗАГОЛОВОК: {title}\nТЕКСТ: {body}"
+              title = event_data.get("issue", {}).get("title", "Без заголовка")
+              body = event_data.get("issue", {}).get("body", "Без описания")
+              content = f"ТИП: Issue\nЗАГОЛОВОК: {title}\nОПИСАНИЕ: {body}"
 
+          # Настройка запроса к ИИ
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-          
           prompt = f"""
-          Ты техлид d9hi. Автор: {author}. 
-          Проанализируй контент и ответь СТРОГО в таком формате:
-          Строка 1: Название метки (bug, enhancement, question, invalid, documentation или go)
-          Строка 2: Вердикт (APPROVE или REJECT)
-          Строка 3: Твой комментарий на русском.
+          Ты — главный ИИ-контролер проекта d9hi. Твоя задача — модерация.
+          Автор: {author}
+          
+          ИНСТРУКЦИЯ:
+          1. Проанализируй контент ниже.
+          2. В первой строке напиши ТОЛЬКО название подходящей метки: [bug, enhancement, question, invalid, documentation, go].
+          3. Во второй строке напиши вердикт: REJECT (если это мусор, 'бла-бла' или пустая Issue) или APPROVE.
+          4. С третьей строки напиши краткое мнение на русском.
 
-          Контент:
-          {content_to_analyze}
+          КОНТЕНТ ДЛЯ АНАЛИЗА:
+          {content}
           """
 
           try:
               payload = {"contents": [{"parts": [{"text": prompt}]}]}
-              response = requests.post(url, json=payload)
-              data = response.json()
-              res_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-              lines = res_text.split('\n')
+              r = requests.post(url, json=payload)
+              data = r.json()
               
-              label = lines[0].lower() if any(x in lines[0].lower() for x in ["bug", "enhancement", "question", "invalid", "documentation", "go"]) else "question"
-              status = "reject" if "REJECT" in lines[1].upper() else "approve"
-              comment = "\n".join(lines[2:])
+              if "candidates" in data:
+                  res = data["candidates"][0]["content"]["parts"][0]["text"].strip().split('\n')
+                  label = res[0].lower().strip()
+                  # Проверка, чтобы метка была из списка
+                  if not any(x in label for x in ["bug", "enhancement", "question", "invalid", "documentation", "go"]):
+                      label = "question"
+                  status = "reject" if "REJECT" in (res[1] if len(res) > 1 else "").upper() else "approve"
+                  comment = "\n".join(res[2:]) if len(res) > 2 else "Анализ завершен."
+              else:
+                  label, status, comment = "invalid", "reject", f"Ошибка API Google: {json.dumps(data)}"
           except Exception as e:
-              label, status, comment = "question", "error", f"Ошибка анализа: {str(e)}"
+              label, status, comment = "question", "error", f"Ошибка выполнения скрипта: {str(e)}"
 
+          # Передаем переменные в систему GitHub
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
-              f.write(f"AI_LABEL={label.strip()}\n")
+              f.write(f"AI_LABEL={label}\n")
               f.write(f"AI_STATUS={status}\n")
               f.write(f"AI_RESULT<<EOF\n{comment}\nEOF\n")
 
-      - name: Comment and Label
+      - name: Execute GitHub Actions
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           TYPE: ${{ github.event_name == 'pull_request' and 'pr' || 'issue' }}
         run: |
+          # 1. Вешаем метку
           gh $TYPE edit $NUMBER --add-label "${{ env.AI_LABEL }}"
+          
+          # 2. Оставляем комментарий
           gh $TYPE comment $NUMBER --body "### 🤖 d9hi AI Review
           Метка: **${{ env.AI_LABEL }}**
           
           ${{ env.AI_RESULT }}
           
           Проверка d9hi завершена 🚀"
-
-      - name: Auto-Close if Trash
-        if: env.AI_STATUS == 'reject'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-          TYPE: ${{ github.event_name == 'pull_request' and 'pr' || 'issue' }}
-        run: gh $TYPE close $NUMBER --comment "d9hi закрыл это как бесполезный контент."
+          
+          # 3. Закрываем, если это мусор (reject)
+          if [ "${{ env.AI_STATUS }}" = "reject" ]; then
+            gh $TYPE close $NUMBER --comment "Автоматическое закрытие: d9hi не одобряет этот контент."
+          fi
