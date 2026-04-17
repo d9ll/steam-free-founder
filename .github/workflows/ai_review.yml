@@ -3,10 +3,13 @@ name: d9hi PR Reviewer
 on:
   pull_request:
     types: [opened, synchronize]
+  issues:
+    types: [opened]
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write # Добавили права на метки для Issues
 
 jobs:
   review:
@@ -20,51 +23,78 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_ACTOR: ${{ github.actor }}
+          EVENT_TYPE: ${{ github.event_name }}
         shell: python
         run: |
           import os, requests, json, subprocess
 
           api_key = os.getenv("GEMINI_API_KEY")
           author = os.getenv("GITHUB_ACTOR")
+          event = os.getenv("EVENT_TYPE")
 
-          if not api_key:
-              print("PR_STATUS=error")
-              exit(0)
+          # Собираем контекст (Diff для PR или текст для Issue)
+          content = ""
+          if event == "pull_request":
+              try:
+                  content = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:4000]
+              except: content = "Новый PR"
+          else:
+              # Для Issues берем заголовок и тело
+              content = f"Issue Title: ${{ github.event.issue.title }}\nBody: ${{ github.event.issue.body }}"
+
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+          
+          prompt = f"""
+          Ты техлид d9hi. Твоя задача — проанализировать {event} и выбрать ОДНУ метку из списка:
+          [bug, enhancement, question, invalid, documentation, go].
+          
+          ИНСТРУКЦИЯ:
+          1. В первой строке напиши ТОЛЬКО название метки (например: bug).
+          2. Во второй строке напиши статус: REJECT (если это мусор/пустота) или APPROVE.
+          3. Дальше напиши краткий комментарий на русском.
+          
+          Автор: {author}
+          Контент: {content}
+          """
 
           try:
-              diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:4000]
+              payload = {"contents": [{"parts": [{"text": prompt}]}]}
+              response = requests.post(url, json=payload)
+              res_text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+              lines = [line.strip() for line in res_text.split('\n') if line.strip()]
               
-              if len(diff.strip()) < 10:
-                  result = "REJECT\nСлишком мало изменений. d9hi не принимает пустые файлы."
-              else:
-                  url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-                  prompt = f"Ты жесткий AI d9hi. Автор: {author}. Если в коде мусор или 'бла-бла', пиши 'REJECT'. Если годно - 'APPROVE'. Код: {diff}"
-                  
-                  payload = {"contents": [{"parts": [{"text": prompt}]}]}
-                  response = requests.post(url, json=payload)
-                  data = response.json()
-                  
-                  if "candidates" in data:
-                      result = data["candidates"][0]["content"]["parts"][0]["text"]
-                  else:
-                      result = f"error\nОшибка API: {data.get('error', {}).get('message', 'Unknown error')}"
-          except Exception as e:
-              result = f"error\nОшибка: {str(e)}"
-
-          status = "reject" if "REJECT" in result else ("approve" if "APPROVE" in result else "error")
-          clean_result = result.replace("REJECT", "").replace("APPROVE", "").strip()
+              label = lines[0].lower() if lines[0].lower() in ["bug", "enhancement", "question", "invalid", "documentation", "go"] else "question"
+              status = lines[1] if len(lines) > 1 else "APPROVE"
+              comment = "\n".join(lines[2:]) if len(lines) > 2 else "Анализ завершен."
+          except:
+              label, status, comment = "question", "REJECT", "Ошибка анализа."
 
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
-              f.write(f"AI_RESULT<<EOF\n{clean_result}\nEOF\n")
-              f.write(f"PR_STATUS={status}\n")
+              f.write(f"AI_LABEL={label}\n")
+              f.write(f"PR_STATUS={'reject' if 'REJECT' in status else 'approve'}\n")
+              f.write(f"AI_RESULT<<EOF\n{comment}\nEOF\n")
 
-      - name: Comment PR
-        uses: thollander/actions-comment-pull-request@v2
-        with:
-          message: "### 🤖 d9hi AI Code Review\n${{ env.AI_RESULT }}"
+      - name: Comment and Label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          TYPE: ${{ github.event_name == 'pull_request' and 'pr' || 'issue' }}
+        run: |
+          # Вешаем метку
+          gh $TYPE edit $NUMBER --add-label "${{ env.AI_LABEL }}"
+          
+          # Оставляем коммент
+          gh $TYPE comment $NUMBER --body "### 🤖 d9hi AI Review
+          Метка: **${{ env.AI_LABEL }}**
+          
+          ${{ env.AI_RESULT }}
+          
+          Проверка d9hi завершена 🚀"
 
-      - name: Close Trash PR
+      - name: Close Trash
         if: env.PR_STATUS == 'reject'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr close ${{ github.event.pull_request.number }} --comment "d9hi отклонил мусорные правки."
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          TYPE: ${{ github.event_name == 'pull_request' and 'pr' || 'issue' }}
+        run: gh $TYPE close $NUMBER --comment "Авто-закрытие: d9hi определил это как невалидный контент."
