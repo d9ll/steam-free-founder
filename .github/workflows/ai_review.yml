@@ -17,9 +17,10 @@ jobs:
           fetch-depth: 2
 
       - name: Gemini AI Review
+        # ВАЖНО: Мы явно прокидываем секрет в окружение Python
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GITHUB_ACTOR: ${{ github.actor }} # ПЕРЕДАЕМ АВТОРА
+          GITHUB_ACTOR: ${{ github.actor }}
         shell: python
         run: |
           import os
@@ -27,40 +28,54 @@ jobs:
           import json
           import subprocess
 
-          api_key = os.getenv("AIzaSyCQuxc9xIlANvpifsX6vQ6zh7YRiUMwhWU")
+          # 1. Загрузка и проверка переменных
+          api_key = os.getenv("GEMINI_API_KEY")
           author = os.getenv("GITHUB_ACTOR")
 
+          if not api_key:
+              print("::error::Критическая ошибка: Секрет GEMINI_API_KEY не передан в Actions!")
+              exit(1)
+
           try:
+              # 2. Получаем изменения (diff)
               diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:4000]
               
-              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+              # 3. Настройка запроса
+              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
               
-              # Улучшенный промпт
               prompt = f"""
-              Ты — жесткий и профессиональный AI-ассистент проекта d9hi. 
+              Ты — профессиональный AI-ассистент проекта d9hi. 
               Автор этого Pull Request: {author}
 
               ИНСТРУКЦИИ:
-              1. Если автор 'dependabot[bot]', просто напиши: "Зафиксировано обновление зависимостей. Проверка пройдена."
-              2. Если автор 'd9ll' (это владелец проекта):
-                 - Проверь код на полезность. Если в коде мусор, пустые файлы или 'бла-бла', сделай замечание в стиле 'Бро, зачем ты пушишь мусор в d9hi?'.
-                 - Проверь безопасность (токены) и логику парсинга Steam.
-                 - Если все реально круто, напиши: 'Код огонь, можно мержить'.
+              1. Если автор 'dependabot[bot]', напиши: "Зафиксировано обновление зависимостей. Проверка пройдена."
+              2. Если автор 'd9ll':
+                 - Проверь код на полезность. Если там мусор, пустые файлы или бессмысленный текст, сделай строгое замечание.
+                 - Проверь безопасность (токены/ключи) и логику парсинга Steam.
+                 - Если все отлично, напиши: 'Код огонь, можно мержить'.
               
-              Отвечай на русском. В конце добавь: 'Проверка d9hi завершена 🚀'.
+              Отвечай на русском языке. В конце добавь: 'Проверка d9hi завершена 🚀'.
               
               КОД ИЗМЕНЕНИЙ:
               {diff}
               """
 
               payload = {"contents": [{"parts": [{"text": prompt}]}]}
+              
+              # 4. Отправка в Google
               response = requests.post(url, json=payload)
               data = response.json()
-              result = data["candidates"][0]["content"]["parts"][0]["text"] if "candidates" in data else f"Ошибка: {json.dumps(data)}"
+              
+              if "candidates" in data:
+                  result = data["candidates"][0]["content"]["parts"][0]["text"]
+              else:
+                  # Выводим ошибку API, чтобы понять, что не так с ключом
+                  result = f"Ошибка API Google: {json.dumps(data)}"
           
           except Exception as e:
-              result = f"Ошибка: {str(e)}"
+              result = f"Ошибка выполнения скрипта: {str(e)}"
 
+          # 5. Записываем результат для комментария
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
               f.write(f"AI_RESULT<<EOF\n{result}\nEOF\n")
 
