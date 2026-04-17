@@ -24,43 +24,42 @@ jobs:
           num = event['issue']['number']
           author = event['sender']['login']
           title = event['issue']['title']
-          body = event['issue']['body'] or ""
-          content = f"Заголовок: {title}\nОписание: {body}"
+          body = event['issue']['body'] or "ОПИСАНИЕ ОТСУТСТВУЕТ"
           
-          # Твой ID для ИИ
-          is_owner = (author.lower() == 'd9ll')
-
+          # Полный контекст для ИИ
+          full_context = f"ЗАГОЛОВОК: {title}\nОПИСАНИЕ: {body}"
+          
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
           
+          is_owner = (author.lower() == 'd9ll')
+
           prompt = f"""
-          Ты — d9hi AI. 
-          АВТОР: {author} {'(ЭТО ТВОЙ СОЗДАТЕЛЬ, БУДЬ ВЕЖЛИВ)' if is_owner else '(Обычный юзер)'}.
+          Ты — d9hi AI. Проанализируй тикет.
+          ВАЖНО: Смотри и на ЗАГОЛОВОК, и на ОПИСАНИЕ. 
           
-          ПРАВИЛА:
-          1. Если автор {author} — ставь 'question' и APPROVE.
-          2. Если это адекватный вопрос про апдейт или баг — ставь 'question' или 'bug' и APPROVE.
-          3. Если это мусор/хейт — ставь 'trash' и REJECT.
+          1. Если в ЗАГОЛОВКЕ пожелание, адекватный вопрос или баг (даже при пустом описании) — это APPROVE.
+          2. Если автор {author} — это всегда APPROVE.
+          3. Если и заголовок, и описание — это бессвязный бред или хейт ('ыыы', 'проект говно') — это REJECT и тег 'trash'.
           
           Ответишь в 3 строки: Тег, Вердикт, Ответ.
           """
           
           try:
-              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt + "\nКонтент: " + content}]}]}, timeout=20)
+              payload = {"contents": [{"parts": [{"text": f"{prompt}\n\nКонтент:\n{full_context}"}]}]}
+              r = requests.post(url, json=payload, timeout=20)
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
               label, status, msg = res[0].lower().strip(), res[1].upper().strip(), "\n".join(res[2:])
           except:
-              label, status, msg = "question", "APPROVE", "Временно туплю, но доступ открыт."
+              label, status, msg = "question", "APPROVE", "Оставляю на усмотрение владельца."
 
-          # 1. Сначала вешаем метку
+          # Ставим метку
           os.system(f"gh issue edit {num} --add-label '{label}'")
           
-          # 2. Комментируем
-          icon = "😇" if is_owner or status == "APPROVE" else "💀"
+          # Пишем коммент
+          icon = "😇" if status == "APPROVE" else "💀"
           os.system(f"gh issue comment {num} --body '### {icon} d9hi AI\n\n{msg}'")
           
-          # 3. ЖЕСТКАЯ ПРОВЕРКА: Закрываем ТОЛЬКО если это НЕ ты И это РЕАЛЬНО треш
-          if not is_owner and (label == 'trash' or status == 'REJECT'):
+          # ЗАКРЫВАЕМ ТОЛЬКО ЕСЛИ ЭТО РЕАЛЬНЫЙ МУСОР И НЕ ТЫ
+          if not is_owner and status == "REJECT" and label == "trash":
               os.system(f"gh issue close {num} -r 'not_planned'")
               os.system(f"gh issue lock {num} --reason 'spam'")
-          else:
-              print(f"Доступ разрешен для {author}.")
