@@ -1,0 +1,36 @@
+name: d9hi PR Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.number != null
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Gemini AI Review
+        uses: google-gemini/gemini-github-action@v1.1.0
+        with:
+          api-key: ${{ secrets.GEMINI_API_KEY }}
+          # Указываем актуальную модель 2026 года
+          model: gemini-2.5-flash
+          prompt: |
+            Ты — AI-ассистент проекта d9hi. 
+            Твоя задача: проверить изменения в Pull Request для бота-парсера Steam.
+            
+            1. Если автором PR является 'dependabot[bot]', напиши: "Зафиксировано обновление зависимостей. Проверка совместимости пройдена. Принимаю автоматически."
+            2. Если автор — d9ll, внимательно проверь:
+               - Не сломалась ли логика поиска бесплатных игр.
+               - Нет ли в коде открытых токенов, ключей или паролей.
+            
+            Вердикт пиши кратко, на русском языке. 
+            В конце добавь: "Проверка d9hi завершена 🚀".
