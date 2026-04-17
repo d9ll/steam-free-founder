@@ -1,36 +1,84 @@
-name: d9hi PR Reviewer
+name: d9hi AI Monitor
 
 on:
   pull_request:
     types: [opened, synchronize]
+  issues:
+    types: [opened]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.number != null
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
       - name: Gemini AI Review
-        uses: google-gemini/gemini-github-action@v1.1.0
-        with:
-          api-key: ${{ secrets.GEMINI_API_KEY }}
-          # Указываем актуальную модель 2026 года
-          model: gemini-2.5-flash
-          prompt: |
-            Ты — AI-ассистент проекта d9hi. 
-            Твоя задача: проверить изменения в Pull Request для бота-парсера Steam.
-            
-            1. Если автором PR является 'dependabot[bot]', напиши: "Зафиксировано обновление зависимостей. Проверка совместимости пройдена. Принимаю автоматически."
-            2. Если автор — d9ll, внимательно проверь:
-               - Не сломалась ли логика поиска бесплатных игр.
-               - Нет ли в коде открытых токенов, ключей или паролей.
-            
-            Вердикт пиши кратко, на русском языке. 
-            В конце добавь: "Проверка d9hi завершена 🚀".
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        shell: python
+        run: |
+          import os, requests, json, subprocess
+
+          # 1. Сбор данных
+          try:
+              with open(os.environ['GITHUB_EVENT_PATH'], 'r', encoding='utf-8') as f:
+                  event_data = json.load(f)
+              
+              if "pull_request" in event_data:
+                  diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:3000]
+                  content = f"PR Diff:\n{diff}"
+              else:
+                  content = f"Issue: {event_data.get('issue', {}).get('title')}\n{event_data.get('issue', {}).get('body')}"
+          except Exception as e:
+              content = f"Ошибка сбора данных: {str(e)}"
+
+          # 2. Запрос к ИИ
+          api_key = os.getenv("GEMINI_API_KEY")
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+          prompt = (
+              "Ты — техлид d9hi. Ответь строго в 3 строки:\n"
+              "1. Метка (bug, enhancement, question, invalid)\n"
+              "2. Вердикт (APPROVE или REJECT)\n"
+              "3. Комментарий на русском.\n\n"
+              f"Контент: {content}"
+          )
+
+          try:
+              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
+              res = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip().split('\n')
+              label = res[0].lower().strip()
+              status = "reject" if "REJECT" in res[1].upper() else "approve"
+              comment = "\n".join(res[2:])
+          except:
+              label, status, comment = "invalid", "reject", "Бот не смог обработать это. Похоже на мусор."
+
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
+              f.write(f"AI_LABEL={label}\nAI_STATUS={status}\nAI_RESULT<<EOF\n{comment}\nEOF\n")
+
+      - name: Post Result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          TYPE: ${{ github.event_name == 'pull_request' and 'pr' || 'issue' }}
+        run: |
+          # Теперь он ОБЯЗАН написать коммент
+          gh $TYPE comment $NUMBER --body "### 🤖 d9hi AI Monitor
+          **Вердикт:** ${{ env.AI_STATUS }}
+          **Метка:** ${{ env.AI_LABEL }}
+          
+          ${{ env.AI_RESULT }}
+          
+          Проверка завершена 🚀"
+          
+          gh $TYPE edit $NUMBER --add-label "${{ env.AI_LABEL }}"
+          
+          if [ "${{ env.AI_STATUS }}" = "reject" ]; then
+            gh $TYPE close $NUMBER --comment "d9hi отклонил изменения."
+          fi
