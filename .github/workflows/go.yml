@@ -1,0 +1,28 @@
+name: Go
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        # Используем stable, чтобы всегда была актуальная версия
+        go-version: 'stable'
+        # Включаем кэширование, чтобы билд шел быстрее
+        cache: true
+
+    - name: Build
+      run: go build -v ./...
+
+    # Если тестов нет, этот шаг можно просто удалить или закомментировать
+    - name: Test
+      run: go test -v ./...
