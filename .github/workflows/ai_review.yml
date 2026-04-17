@@ -41,7 +41,7 @@ jobs:
               diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:4000]
               
               # 3. Настройка запроса
-              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
               
               prompt = f"""
               Ты — профессиональный AI-ассистент проекта d9hi. 
