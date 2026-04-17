@@ -1,0 +1,49 @@
+name: d9hi PR Terminator
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  pr-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PR-Logic
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: python
+        run: |
+          import os, requests, json, subprocess
+
+          with open(os.environ['GITHUB_EVENT_PATH'], 'r') as f:
+              event = json.load(f)
+          
+          num = event['pull_request']['number']
+          author = event['sender']['login']
+          
+          # Берем DIFF кода (первые 3000 символов)
+          try:
+              diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:3000]
+          except:
+              diff = "No diff available"
+
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
+          
+          prompt = f"Ты техлид d9hi. Проверь PR от {author}. Если мусор или пустой - REJECT. Если ок - APPROVE. Выбери метку [bug, enhancement, go, invalid]. Ответь в 3 строки: Метка, Вердикт, Коммент. Diff:\n{diff}"
+          
+          try:
+              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
+              res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
+              label, status, msg = res[0].lower(), res[1].upper(), "\n".join(res[2:])
+          except:
+              label, status, msg = "invalid", "REJECT", "Ошибка анализа PR."
+
+          os.system(f"gh pr edit {num} --add-label '{label}'")
+          os.system(f"gh pr comment {num} --body '### 🤖 PR Guard\n**Status:** {status}\n\n{msg}'")
+          if "REJECT" in status:
+              os.system(f"gh pr close {num} -c 'PR отклонен.'")
