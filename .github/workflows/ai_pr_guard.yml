@@ -10,7 +10,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: AI Logic
+      - name: Dual Personality Logic
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -22,22 +22,25 @@ jobs:
               event = json.load(f)
           
           num = event['issue']['number']
-          content = f"Title: {event['issue']['title']}\nBody: {event['issue']['body'] or 'Empty'}"
+          content = f"Заголовок: {event['issue']['title']}\nОписание: {event['issue']['body'] or 'Пусто'}"
           
-          # Используем актуальную модель Gemini 2.5 Flash
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
           
           prompt = f"""
-          Ты — d9hi AI. Модерируй это Issue. 
-          Если это бред, спам или хейт — ставь тег 'trash' и REJECT.
-          Если нормальный вопрос — ставь 'question' или 'bug'.
+          Ты — d9hi AI с двумя личностями.
+          
+          ЛИЧНОСТЬ 1 (Assistant): Если пользователь задает нормальный вопрос, сообщает о баге или предлагает идею. Будь вежлив, помоги советом. Теги: [question, bug, enhancement].
+          
+          ЛИЧНОСТЬ 2 (Destroyer): Если пользователь спамит, хейтит, пишет бред ('проект говно', 'аааа', 'ыыы'). Будь максимально токсичным, используй черный юмор, унизь тролля. Теги: [trash, invalid].
+          
+          ВАЖНО: Если это Личность 2 — ОБЯЗАТЕЛЬНО ставь тег 'trash'.
           
           Ответь строго в 3 строки:
           1. Тег
-          2. Вердикт (APPROVE/REJECT)
-          3. Короткий ответ (для троллей — жестко, для людей — по делу).
+          2. Вердикт (APPROVE или REJECT)
+          3. Ответ от лица соответствующей личности.
           
-          Контент:
+          Контент для анализа:
           {content}
           """
           
@@ -46,12 +49,16 @@ jobs:
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
               label, status, msg = res[0].lower().strip(), res[1].upper().strip(), "\n".join(res[2:])
           except:
-              label, status, msg = "trash", "REJECT", "Система d9hi AI не принимает такой контент."
+              label, status, msg = "trash", "REJECT", "Мои системы отказываются переваривать этот бред."
 
-          # Применяем санкции
+          # 1. Вешаем тег
           os.system(f"gh issue edit {num} --add-label '{label}'")
-          os.system(f"gh issue comment {num} --body '### 🤖 d9hi AI\n{msg}'")
           
+          # 2. Комментируем
+          personality = "😇 **d9hi Assistant**" if status == "APPROVE" else "💀 **d9hi Destroyer**"
+          os.system(f"gh issue comment {num} --body '{personality}\n\n{msg}'")
+          
+          # 3. Наказываем, если это треш
           if status == "REJECT" or label == "trash":
               os.system(f"gh issue close {num} -r 'not_planned'")
               os.system(f"gh issue lock {num} --reason 'spam'")
