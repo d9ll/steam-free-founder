@@ -5,7 +5,7 @@ on:
     types: [opened, synchronize]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
@@ -31,35 +31,45 @@ jobs:
           author = os.getenv("GITHUB_ACTOR")
 
           try:
+              # 1. Получаем дифф
               diff = subprocess.check_output(["git", "diff", "HEAD^", "HEAD"]).decode("utf-8")[:4000]
-              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
               
-              prompt = f"""
-              Ты — жесткий AI-ассистент проекта d9hi. 
-              Автор: {author}.
-              
-              ЗАДАЧА:
-              1. Если автор 'dependabot[bot]', напиши 'ACCEPT' и кратко что обновилось.
-              2. Если в коде мусор, пустые файлы или 'бла-бла', напиши в первой строке 'REJECT', а дальше жестко раскритикуй.
-              3. Если код полезный, напиши 'APPROVE' и похвали.
-              
-              Отвечай на русском. В конце: 'Проверка d9hi завершена 🚀'.
-              Код:
-              {diff}
-              """
+              # 2. Базовая проверка на пустоту
+              if len(diff.strip()) < 10:
+                  result = "REJECT\nБро, тут почти нет кода. d9hi не принимает пустые правки."
+              else:
+                  url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+                  
+                  prompt = f"""
+                  Ты — жесткий AI-ассистент проекта d9hi. 
+                  Автор: {author}.
+                  
+                  ЗАДАЧА:
+                  1. Если автор 'dependabot[bot]', напиши 'ACCEPT' и что изменилось.
+                  2. Если автор 'd9ll':
+                     - Если в коде мусор, 'бла-бла' или бесполезные файлы, напиши в первой строке 'REJECT' и жестко критикуй.
+                     - Если код полезный, напиши 'APPROVE' и похвали.
+                  
+                  Отвечай на русском. В конце: 'Проверка d9hi завершена 🚀'.
+                  Код изменений:
+                  {diff}
+                  """
 
-              payload = {"contents": [{"parts": [{"text": prompt}]}]}
-              response = requests.post(url, json=payload)
-              result = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-          except Exception as e:
-              result = f"REJECT\nОшибка: {str(e)}"
-
-          # Определяем статус для GitHub Actions
-          status = "approve"
-          if "REJECT" in result:
-              status = "reject"
+                  payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                  response = requests.post(url, json=payload)
+                  data = response.json()
+                  
+                  if "candidates" in data and data["candidates"]:
+                      result = data["candidates"][0]["content"]["parts"][0]["text"]
+                  else:
+                      result = f"REJECT\nОшибка API: {json.dumps(data)}"
           
-          # Очищаем текст от технического слова REJECT/APPROVE для комментария
+          except Exception as e:
+              result = f"REJECT\nОшибка скрипта: {str(e)}"
+
+          # 3. Логика статуса для закрытия PR
+          status = "reject" if "REJECT" in result else "approve"
+          # Убираем технические слова из финального комментария
           clean_result = result.replace("REJECT", "").replace("APPROVE", "").replace("ACCEPT", "").strip()
 
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
@@ -73,10 +83,9 @@ jobs:
             ### 🤖 d9hi AI Code Review
             ${{ env.AI_RESULT }}
 
-      # ШАГ ЗАКРЫТИЯ: Если ИИ сказал REJECT — закрываем PR
       - name: Close Trash PR
         if: env.PR_STATUS == 'reject'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr close ${{ github.event.pull_request.number }} --comment "Автоматическое закрытие: d9hi не принимает мусорные правки."
+          gh pr close ${{ github.event.pull_request.number }} --comment "Автоматическое закрытие: d9hi отклонил эти изменения."
