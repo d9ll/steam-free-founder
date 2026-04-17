@@ -24,6 +24,7 @@
 2. Установите зависимости
 go get [github.com/go-telegram-bot-api/telegram-bot-api/v5](https://github.com/go-telegram-bot-api/telegram-bot-api/v5)
 go get [github.com/gocolly/colly](https://github.com/gocolly/colly)
+
 или(так надежнее)
 ```bash
 go mod tidy
