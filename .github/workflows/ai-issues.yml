@@ -23,28 +23,19 @@ jobs:
           num = event['issue']['number']
           author = event['sender']['login']
           title = event['issue']['title']
-          body = event['issue']['body'] or "Описание отсутствует"
-          
           is_owner = (author.lower() == "d9ll")
+          
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
 
-          # Логика: Для тебя — помощник, для остальных — фильтр
-          if is_owner:
-              prompt = f"Ты — добрый ассистент Глеба. Он открыл тикет: '{title}'. Поприветствуй его и поставь тег question. Вердикт: APPROVE."
-          else:
-              prompt = f"Ты модератор. Проверь тикет на спам: '{title}'. Если это просто 'привет' без сути или бред — REJECT. Теги: bug, question, enhancement, invalid."
+          prompt = f"Ты помощник Глеба. Он открыл тикет: '{title}'. Поставь тег (question/bug/enhancement) и напиши короткий привет."
 
           try:
               r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
-              label = res[0].lower().strip().replace('[','').replace(']','')
-              status = "approve" if is_owner else ("reject" if "REJECT" in res[1].upper() else "approve")
-              msg = res[2] if len(res) > 2 else "Принято к рассмотрению."
+              label = res[0].lower().strip()
+              msg = res[2] if len(res) > 2 else "Принято!"
           except:
-              label, status, msg = "question", "approve", "Система временно недоступна, но тикет открыт."
+              label, msg = "question", "Я на связи."
 
           os.system(f"gh issue edit {num} --add-label '{label}'")
           os.system(f"gh issue comment {num} --body '### 🤖 Issue Monitor\n{msg}'")
-          
-          if status == "reject" and not is_owner:
-              os.system(f"gh issue close {num} -r 'not_planned'")
