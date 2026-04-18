@@ -10,7 +10,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: AI Logic
+      - name: Basic AI Moderation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -24,42 +24,46 @@ jobs:
           num = event['issue']['number']
           author = event['sender']['login']
           title = event['issue']['title']
-          body = event['issue']['body'] or "ОПИСАНИЕ ОТСУТСТВУЕТ"
-          
-          # Полный контекст для ИИ
-          full_context = f"ЗАГОЛОВОК: {title}\nОПИСАНИЕ: {body}"
+          body = event['issue']['body'] or "Описание отсутствует"
+          content = f"Заголовок: {title}\nОписание: {body}"
           
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
           
-          is_owner = (author.lower() == 'd9ll')
-
+          # Упрощенный промпт без личностей
           prompt = f"""
-          Ты — d9hi AI. Проанализируй тикет.
-          ВАЖНО: Смотри и на ЗАГОЛОВОК, и на ОПИСАНИЕ. 
+          Ты — автоматический модератор проекта d9hi. 
+          Твоя задача: классифицировать тикет и дать краткий ответ.
           
-          1. Если в ЗАГОЛОВКЕ пожелание, адекватный вопрос или баг (даже при пустом описании) — это APPROVE.
-          2. Если автор {author} — это всегда APPROVE.
-          3. Если и заголовок, и описание — это бессвязный бред или хейт ('ыыы', 'проект говно') — это REJECT и тег 'trash'.
+          Классификация:
+          - 'question': если это вопрос, приветствие или просьба о помощи.
+          - 'bug': если сообщают об ошибке.
+          - 'enhancement': если предлагают идею.
+          - 'trash': только если это явный спам, мат или бессвязный набор букв.
           
-          Ответишь в 3 строки: Тег, Вердикт, Ответ.
+          Автор тикета: {author}.
+          
+          Ответь строго в 3 строки:
+          1. Тег
+          2. Вердикт (APPROVE или REJECT)
+          3. Краткий, спокойный комментарий.
+          
+          Контент:
+          {content}
           """
           
           try:
-              payload = {"contents": [{"parts": [{"text": f"{prompt}\n\nКонтент:\n{full_context}"}]}]}
-              r = requests.post(url, json=payload, timeout=20)
+              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
               label, status, msg = res[0].lower().strip(), res[1].upper().strip(), "\n".join(res[2:])
           except:
-              label, status, msg = "question", "APPROVE", "Оставляю на усмотрение владельца."
+              label, status, msg = "question", "APPROVE", "Тикет принят на рассмотрение."
 
-          # Ставим метку
+          # 1. Вешаем метку
           os.system(f"gh issue edit {num} --add-label '{label}'")
           
-          # Пишем коммент
-          icon = "😇" if status == "APPROVE" else "💀"
-          os.system(f"gh issue comment {num} --body '### {icon} d9hi AI\n\n{msg}'")
+          # 2. Оставляем комментарий
+          os.system(f"gh issue comment {num} --body '🤖 **d9hi AI Monitor**\n\n**Вердикт:** {status}\n**Тег:** `{label}`\n\n{msg}'")
           
-          # ЗАКРЫВАЕМ ТОЛЬКО ЕСЛИ ЭТО РЕАЛЬНЫЙ МУСОР И НЕ ТЫ
-          if not is_owner and status == "REJECT" and label == "trash":
+          # 3. Закрываем ТОЛЬКО если это реально жесткий спам (trash)
+          if label == "trash" and author.lower() != "d9ll":
               os.system(f"gh issue close {num} -r 'not_planned'")
-              os.system(f"gh issue lock {num} --reason 'spam'")
