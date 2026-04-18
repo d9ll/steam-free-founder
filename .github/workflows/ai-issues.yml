@@ -10,7 +10,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Resetting AI to Normal Mode
+      - name: Friendly AI Logic
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -24,23 +24,28 @@ jobs:
           num = event['issue']['number']
           author = event['sender']['login']
           title = event['issue']['title']
-          body = event['issue']['body'] or "Описание отсутствует"
+          body = event['issue']['body'] or "Просто заглянул поздороваться!"
           
-          # Узнаем тебя, чтобы бот не наглел
           is_owner = (author.lower() == 'd9ll')
 
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
           
+          # Промпт, который заставляет его быть лапочкой
           prompt = f"""
-          Ты — спокойный помощник-модератор проекта d9hi. 
-          АВТОР ТИКЕТА: {author}. {'(ЭТО СОЗДАТЕЛЬ ПРОЕКТА - ВСЕГДА APPROVE)' if is_owner else ''}
+          Ты — самый добрый и позитивный модератор в мире для проекта d9hi. 
+          Твоя задача: поприветствовать автора и повесить тег.
           
           ПРАВИЛА:
-          1. Проанализируй и заголовок ('{title}'), и описание ('{body}').
-          2. Если это приветствие, вопрос или идея — ставь APPROVE и тег 'question' или 'enhancement'.
-          3. Если это явный спам (бессмысленные буквы) — ставь REJECT и тег 'trash'.
+          1. НИКОГДА не закрывай тикеты, если они не являются откровенным спамом (типа 'asdfghjkl').
+          2. Если автор {author} — это твой создатель, будь максимально вежлив и всегда ставь APPROVE.
+          3. Если описание пустое или там просто приветствие — это нормально, это 'question'.
           
-          Ответишь в 3 строки: Тег, Вердикт, Твой ответ.
+          Ответишь в 3 строки:
+          1. Тег (question, bug, enhancement)
+          2. Вердикт (всегда APPROVE, кроме жесткого спама)
+          3. Добрый ответ.
+          
+          Контент: {title} | {body}
           """
           
           try:
@@ -48,14 +53,17 @@ jobs:
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
               label, status, msg = res[0].lower().strip(), res[1].upper().strip(), "\n".join(res[2:])
           except:
-              label, status, msg = "question", "APPROVE", "Принято к рассмотрению."
+              label, status, msg = "question", "APPROVE", "Привет! Глеб скоро посмотрит твой запрос. 😊"
 
-          # 1. Вешаем метку
+          # 1. Вешаем метку (по умолчанию question, если ИИ затупит)
+          if label not in ['question', 'bug', 'enhancement', 'trash']: label = "question"
           os.system(f"gh issue edit {num} --add-label '{label}'")
           
-          # 2. Пишем вежливый коммент
-          os.system(f"gh issue comment {num} --body '🤖 **d9hi AI Monitor**\n\n{msg}'")
+          # 2. Пишем добрый коммент
+          os.system(f"gh issue comment {num} --body '✨ **d9hi Friendly AI**\n\n{msg}'")
           
-          # 3. Закрываем ТОЛЬКО если это реально ТРЭШ и это НЕ ТЫ
-          if not is_owner and label == 'trash' and status == 'REJECT':
+          # 3. Закрываем ТОЛЬКО если это реально мусор и НЕ ТЫ
+          if not is_owner and label == "trash":
               os.system(f"gh issue close {num} -r 'not_planned'")
+          else:
+              print("Тикет оставлен открытым. Всем добра!")
