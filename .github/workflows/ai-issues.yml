@@ -1,4 +1,4 @@
-name: d9hi AI Friendly
+name: d9hi Issue Guard
 on:
   issues:
     types: [opened]
@@ -7,54 +7,44 @@ permissions:
   issues: write
 
 jobs:
-  check:
+  check_issue:
     runs-on: ubuntu-latest
     steps:
-      - name: Be Nice Logic
+      - name: Issue-Logic
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: python
         run: |
           import os, requests, json
-
           with open(os.environ['GITHUB_EVENT_PATH'], 'r') as f:
               event = json.load(f)
-          
+
           num = event['issue']['number']
           author = event['sender']['login']
           title = event['issue']['title']
-          body = event['issue']['body'] or "Просто заглянул передать привет!"
+          body = event['issue']['body'] or "Описание отсутствует"
           
-          is_owner = (author.lower() == 'd9ll')
-
+          is_owner = (author.lower() == "d9ll")
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
-          
-          prompt = f"""
-          Ты — d9hi Assistant, самый добрый ИИ. Твоя цель — помогать Глебу (d9ll).
-          
-          ПРАВИЛА:
-          1. Если автор {author} — это твой создатель. Отвечай с любовью и всегда ставь APPROVE.
-          2. Запрещено использовать слова: 'мусор', 'отклонено', 'не трать время'.
-          3. Любое приветствие — это повод для радости и тег 'question'.
-          4. Закрывай (REJECT) только если там реклама или бред типа '123456789'.
-          
-          Ответишь в 3 строки: Тег, Вердикт, Твой добрый ответ.
-          """
-          
-          try:
-              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt + f"\nКонтент: {title} | {body}"}]}]}, timeout=20)
-              res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
-              label, status, msg = res[0].lower().strip(), res[1].upper().strip(), "\n".join(res[2:])
-          except:
-              label, status, msg = "question", "APPROVE", "Всё супер, я тут!"
 
-          # Исправляем вредность ИИ на уровне кода
-          if is_owner: status = "APPROVE"
-          if label == "invalid": label = "question"
+          # Логика: Для тебя — помощник, для остальных — фильтр
+          if is_owner:
+              prompt = f"Ты — добрый ассистент Глеба. Он открыл тикет: '{title}'. Поприветствуй его и поставь тег question. Вердикт: APPROVE."
+          else:
+              prompt = f"Ты модератор. Проверь тикет на спам: '{title}'. Если это просто 'привет' без сути или бред — REJECT. Теги: bug, question, enhancement, invalid."
+
+          try:
+              r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
+              res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
+              label = res[0].lower().strip().replace('[','').replace(']','')
+              status = "approve" if is_owner else ("reject" if "REJECT" in res[1].upper() else "approve")
+              msg = res[2] if len(res) > 2 else "Принято к рассмотрению."
+          except:
+              label, status, msg = "question", "approve", "Система временно недоступна, но тикет открыт."
 
           os.system(f"gh issue edit {num} --add-label '{label}'")
-          os.system(f"gh issue comment {num} --body '✨ **d9hi AI Friend**\n\n{msg}'")
+          os.system(f"gh issue comment {num} --body '### 🤖 Issue Monitor\n{msg}'")
           
-          if not is_owner and label == "trash":
+          if status == "reject" and not is_owner:
               os.system(f"gh issue close {num} -r 'not_planned'")
