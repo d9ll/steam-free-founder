@@ -24,26 +24,25 @@ jobs:
           num = event['pull_request']['number']
           author = event['sender']['login']
           title = event['pull_request']['title']
-          
           is_owner = (author.lower() == "d9ll")
+          
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
 
-          if is_owner:
-              prompt = f"Глеб залил код: '{title}'. Поставь тег 'go' или 'dependencies'. Вердикт: APPROVE."
-          else:
-              prompt = f"Проверь PR на адекватность: '{title}'. Если описание пустое или заголовок неясный — REJECT. Теги: bug, dependencies, go, invalid."
+          # Улучшенный промпт
+          prompt = f"""
+          Ты модератор PR. Автор: {author}.
+          ЗАДАЧА: Если заголовок '{title}' - это случайный набор букв (спам), ставь REJECT.
+          Если автор Глеб (d9ll), будь вежлив, но если это явный мусор - скажи об этом.
+          Вердикт всегда APPROVE для Глеба, но тег ставь 'invalid' если это спам.
+          """
 
           try:
               r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
               label = res[0].lower().strip()
-              status = "approve" if is_owner else ("reject" if "REJECT" in res[1].upper() else "approve")
-              msg = res[2] if len(res) > 2 else "Код отправлен на проверку."
+              msg = res[2] if len(res) > 2 else "Код на проверке."
           except:
-              label, status, msg = "dependencies", "approve", "PR принят."
+              label, msg = "dependencies", "Ок."
 
           os.system(f"gh pr edit {num} --add-label '{label}'")
           os.system(f"gh pr comment {num} --body '### 🛡️ PR Monitor\n{msg}'")
-          
-          if status == "reject" and not is_owner:
-              os.system(f"gh pr close {num} -c 'PR отклонен из-за недостаточного описания.'")
