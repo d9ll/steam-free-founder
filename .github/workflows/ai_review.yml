@@ -1,76 +1,49 @@
-name: d9hi-terminator-2026
+name: d9hi PR Guard
 on:
   pull_request:
     types: [opened, synchronize]
-  issues:
-    types: [opened]
 
 permissions:
-  contents: write
   pull-requests: write
-  issues: write
+  contents: write
 
 jobs:
-  guard:
+  check_pr:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Guard-Logic
+      - name: PR-Logic
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: python
         run: |
           import os, requests, json
-
           with open(os.environ['GITHUB_EVENT_PATH'], 'r') as f:
               event = json.load(f)
-          
-          is_pr = "pull_request" in event
-          num = event['pull_request']['number'] if is_pr else event['issue']['number']
-          target = "pr" if is_pr else "issue"
+
+          num = event['pull_request']['number']
           author = event['sender']['login']
+          title = event['pull_request']['title']
           
-          # Актуальная модель из твоей панели управления
+          is_owner = (author.lower() == "d9ll")
           url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={os.getenv('GEMINI_API_KEY')}"
-          
-          title = event.get('issue', event.get('pull_request', {})).get('title', '')
-          body = event.get('issue', event.get('pull_request', {})).get('body', '')
-          content = f"AUTH: {author}\nTITLE: {title}\nBODY: {body}"
-          
-          prompt = f"""
-          Ты — безжалостный ИИ-страж проекта d9hi. 
-          Твоя задача: отсекать спам и классифицировать задачи.
-          
-          ПРАВИЛА:
-          1. Если в заголовке или теле мусор ('тест', 'ааа', 'ghjdthrf', 'привет') или пусто — это REJECT.
-          2. Выбери ТОЛЬКО ОДИН тег из списка: [bug, dependencies, documentation, enhancement, go, invalid, question].
-          
-          ОТВЕТЬ СТРОГО В ТРИ СТРОКИ:
-          СТРОКА 1: Тег (маленькими буквами)
-          СТРОКА 2: Вердикт (APPROVE или REJECT)
-          СТРОКА 3: Короткое пояснение на русском (если спам — отвечай грубо, если ок — вежливо).
-          
-          КОНТЕНТ:
-          {content}
-          """
-          
+
+          if is_owner:
+              prompt = f"Глеб залил код: '{title}'. Поставь тег 'go' или 'dependencies'. Вердикт: APPROVE."
+          else:
+              prompt = f"Проверь PR на адекватность: '{title}'. Если описание пустое или заголовок неясный — REJECT. Теги: bug, dependencies, go, invalid."
+
           try:
               r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20)
               res = r.json()['candidates'][0]['content']['parts'][0]['text'].strip().split('\n')
               label = res[0].lower().strip()
-              status = "reject" if "REJECT" in res[1].upper() else "approve"
-              msg = res[2] if len(res) > 2 else "Контент прошел проверку."
+              status = "approve" if is_owner else ("reject" if "REJECT" in res[1].upper() else "approve")
+              msg = res[2] if len(res) > 2 else "Код отправлен на проверку."
           except:
-              label, status, msg = "invalid", "reject", "Ошибка системы. Подозрение на спам-атаку."
+              label, status, msg = "dependencies", "approve", "PR принят."
 
-          # 1. Вешаем тег
-          os.system(f"gh {target} edit {num} --add-label '{label}'")
+          os.system(f"gh pr edit {num} --add-label '{label}'")
+          os.system(f"gh pr comment {num} --body '### 🛡️ PR Monitor\n{msg}'")
           
-          # 2. Пишем вердикт
-          comment = f"### 🤖 d9hi AI Monitor\n**Вердикт:** {status.upper()}\n**Тег:** `{label}`\n\n{msg}"
-          os.system(f"gh {target} comment {num} --body '{comment}'")
-          
-          # 3. Если отшили — закрываем наглухо
-          if status == "reject":
-              os.system(f"gh {target} close {num} -c 'Доступ закрыт.'")
+          if status == "reject" and not is_owner:
+              os.system(f"gh pr close {num} -c 'PR отклонен из-за недостаточного описания.'")
